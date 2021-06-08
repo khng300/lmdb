@@ -8221,6 +8221,56 @@ mdb_page_new(MDB_cursor *mc, uint32_t flags, int num, MDB_page **mp)
 	return 0;
 }
 
+/** Allocate and initialize overflow page for use.
+ * Set #MDB_TXN_ERROR on failure.
+ * @param[in] txn A transaction handle returned by #mdb_txn_begin()
+ * @param[in] dbi A database handle returned by #mdb_dbi_open()
+ * @param[in] num the number of pages to allocate.
+ * @param[out] mp Address of a page, or NULL on failure.
+ * @return 0 on success, non-zero on failure.
+ */
+int
+mdb_page_alloc_ovpages(MDB_txn *txn, MDB_dbi dbi, int num, void **mp)
+{
+	MDB_cursor mc;
+	MDB_xcursor mx;
+	mdb_cursor_init(&mc, txn, dbi, &mx);
+	return mdb_page_new(&mc, P_OVERFLOW, num, (MDB_page **)mp);
+}
+
+int
+mdb_page_free_ovpages(MDB_txn *txn, MDB_dbi dbi, void *mp)
+{
+	MDB_cursor mc;
+	MDB_xcursor mx;
+	mdb_cursor_init(&mc, txn, 0, &mx);
+	mdb_ovpage_free(&mc, mp);
+}
+
+size_t
+mdb_page_ovpages(MDB_env *env, size_t size)
+{
+	return OVPAGES(size, env->me_psize);
+}
+
+void *
+mdb_pgno_to_mp(MDB_env *env, mdb_size_t pgno)
+{
+	return (MDB_page *)(env->me_map + env->me_psize * pgno);
+}
+
+mdb_size_t
+mdb_mp_to_pgno(MDB_env *env, void *mp)
+{
+	return (mdb_size_t)((char *)mp - env->me_map) / env->me_psize;
+}
+
+void *
+mdb_page_get_data_addr(void *mp)
+{
+	return METADATA(mp);
+}
+
 /** Calculate the size of a leaf node.
  * The size depends on the environment's page size; if a data item
  * is too large it will be put onto an overflow page and the node

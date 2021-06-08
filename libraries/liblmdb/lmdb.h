@@ -1639,6 +1639,20 @@ int	mdb_reader_list(MDB_env *env, MDB_msg_func *func, void *ctx);
 int	mdb_reader_check(MDB_env *env, int *dead);
 /**	@} */
 
+	/** @brief  Allocate and initialize overflow page for use.
+	 *
+	 * @param[in] txn A transaction handle returned by #mdb_txn_begin()
+	 * @param[in] dbi A database handle returned by #mdb_dbi_open()
+	 * @param[out] mp Address of a page, or NULL on failure.
+	 * @return 0 on success, non-zero on failure.
+	 */
+int	mdb_page_alloc_ovpages(MDB_txn *txn, MDB_dbi dbi, int num, void **mp);
+int	mdb_page_free_ovpages(MDB_txn *txn, MDB_dbi dbi, void *mp);
+size_t	mdb_page_ovpages(MDB_env *env, size_t size);
+void	*mdb_pgno_to_mp(MDB_env *env, mdb_size_t pgno);
+mdb_size_t mdb_mp_to_pgno(MDB_env *env, void *mp);
+void	*mdb_page_get_data_addr(void *mp);
+
 #ifdef __cplusplus
 }
 #endif
