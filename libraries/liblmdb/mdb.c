@@ -375,7 +375,8 @@ typedef HANDLE mdb_mutex_t, mdb_mutexref_t;
 #define	MDB_FDATASYNC(fd)	(!FlushFileBuffers(fd))
 #define	MDB_MSYNC(addr,len,flags)	(!FlushViewOfFile(addr,len))
 #define	ErrCode()	GetLastError()
-#define GET_PAGESIZE(x) {SYSTEM_INFO si; GetSystemInfo(&si); (x) = si.dwPageSize;}
+/* #define GET_PAGESIZE(x) {SYSTEM_INFO si; GetSystemInfo(&si); (x) = si.dwPageSize;} */
+#define GET_PAGESIZE(x) {((x) = MAX_PAGESIZE);}
 #define	close(fd)	(CloseHandle(fd) ? 0 : -1)
 #define	munmap(ptr,len)	UnmapViewOfFile(ptr)
 #ifdef PROCESS_QUERY_LIMITED_INFORMATION
@@ -481,7 +482,8 @@ typedef pthread_mutex_t *mdb_mutexref_t;
 	 *	This is the basic size that the platform's memory manager uses, and is
 	 *	fundamental to the use of memory-mapped files.
 	 */
-#define	GET_PAGESIZE(x)	((x) = sysconf(_SC_PAGE_SIZE))
+/* #define	GET_PAGESIZE(x)	((x) = sysconf(_SC_PAGE_SIZE)) */
+#define GET_PAGESIZE(x) {((x) = MAX_PAGESIZE);}
 #endif
 
 #define	Z	MDB_FMT_Z	/**< printf/scanf format modifier for size_t */
@@ -675,7 +677,8 @@ static txnid_t mdb_debug_start;
 	 *	#MDB_DUPSORT data items must fit on a node in a regular page.
 	 */
 #ifndef MDB_MAXKEYSIZE
-#define MDB_MAXKEYSIZE	 ((MDB_DEVEL) ? 0 : 511)
+/* #define MDB_MAXKEYSIZE	 ((MDB_DEVEL) ? 0 : 511) */
+#define MDB_MAXKEYSIZE	 (0)
 #endif
 
 	/**	The maximum size of a key we can write to the environment. */
