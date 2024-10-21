@@ -9654,6 +9654,119 @@ mdb_cursor_open(MDB_txn *txn, MDB_dbi dbi, MDB_cursor **ret)
 	return MDB_SUCCESS;
 }
 
+/** Copy the contents of an xcursor.
+ * @param[in] src_mx The xcursor to copy from.
+ * @param[out] mx The xcursor to copy to.
+ */
+static void
+mdb_xcursor_dup(const MDB_xcursor *src_mx, MDB_xcursor *mx)
+{
+	MDB_cursor		*mc = &mx->mx_cursor;
+	MDB_page		*omp;
+	unsigned int	i;
+	int rc;
+
+	mx->mx_db = src_mx->mx_db;
+	mx->mx_dbx = src_mx->mx_dbx;
+	mx->mx_dbflag = src_mx->mx_dbflag;
+	mc->mc_txn = src_mx->mx_cursor.mc_txn;
+	mc->mc_dbi = src_mx->mx_cursor.mc_dbi;
+	mc->mc_db = &mx->mx_db;
+	mc->mc_dbx = &mx->mx_dbx;
+	mc->mc_dbflag = &mx->mx_dbflag;
+	mc->mc_snum = src_mx->mx_cursor.mc_snum;
+	mc->mc_top = src_mx->mx_cursor.mc_top;
+	mc->mc_flags = src_mx->mx_cursor.mc_flags;
+	for (i=0; i<src_mx->mx_cursor.mc_snum; i++) {
+		mc->mc_pg[i] = src_mx->mx_cursor.mc_pg[i];
+		mc->mc_ki[i] = src_mx->mx_cursor.mc_ki[i];
+	}
+	MC_SET_OVPG(mc, MC_OVPG(&src_mx->mx_cursor));
+	MC_SET_KEY_OVPG(mc, MC_KEY_OVPG(&src_mx->mx_cursor));
+	if (MC_OVPG(mc) != NULL) {
+		rc = mdb_rpage_get(mc->mc_txn,MC_OVPG(mc)->mp_pgno,
+			MC_OVPG(mc)->mp_pages, &omp);
+		mdb_cassert(mc, rc == 0);
+	}
+	if (MC_KEY_OVPG(mc) != NULL) {
+		rc = mdb_rpage_get(mc->mc_txn,MC_KEY_OVPG(mc)->mp_pgno,
+			MC_KEY_OVPG(mc)->mp_pages, &omp);
+		mdb_cassert(mc, rc == 0);
+	}
+}
+
+/** Copy the contents of an cursor.
+ * @param[in] src_mc The cursor to copy from.
+ * @param[out] mc The cursor to copy to.
+ */
+static void
+mdb_cursor_dup(const MDB_cursor *src_mc, MDB_cursor *mc)
+{
+	unsigned int	i;
+	MDB_page		*omp;
+	int rc;
+
+	mc->mc_dbi = src_mc->mc_dbi;
+	mc->mc_db = src_mc->mc_db;
+	mc->mc_dbx = src_mc->mc_dbx;
+	mc->mc_dbflag = src_mc->mc_dbflag;
+	mc->mc_snum = src_mc->mc_snum;
+	mc->mc_top = src_mc->mc_top;
+	mc->mc_flags = src_mc->mc_flags;
+	for (i=0; i<src_mc->mc_snum; i++) {
+		mc->mc_pg[i] = src_mc->mc_pg[i];
+		mc->mc_ki[i] = src_mc->mc_ki[i];
+	}
+	MC_SET_OVPG(mc, MC_OVPG(src_mc));
+	MC_SET_KEY_OVPG(mc, MC_KEY_OVPG(src_mc));
+	if (MC_OVPG(mc) != NULL) {
+		rc = mdb_rpage_get(mc->mc_txn,MC_OVPG(mc)->mp_pgno,
+			MC_OVPG(mc)->mp_pages, &omp);
+		mdb_cassert(mc, rc == 0);
+	}
+	if (MC_KEY_OVPG(mc) != NULL) {
+		rc = mdb_rpage_get(mc->mc_txn,MC_KEY_OVPG(mc)->mp_pgno,
+			MC_KEY_OVPG(mc)->mp_pages, &omp);
+		mdb_cassert(mc, rc == 0);
+	}
+	if (src_mc->mc_xcursor != NULL)
+		mdb_xcursor_dup(src_mc->mc_xcursor, mc->mc_xcursor);
+}
+
+int
+mdb_cursor_duplicate(MDB_cursor *csrc, MDB_cursor **cursor)
+{
+	MDB_cursor	*mc;
+	MDB_val		key, data;
+	MDB_page	*mp;
+	MDB_node	*leaf;
+	int			exact = 0;
+	int			nkeys;
+	int			rc;
+
+	rc = mdb_cursor_open(csrc->mc_txn, csrc->mc_dbi, &mc);
+	if (rc != 0)
+		return rc;
+	if (!(csrc->mc_flags & C_INITIALIZED))
+		goto out;
+#if 0
+	rc = mdb_cursor_get(csrc, &key, &data, MDB_GET_CURRENT);
+	if (rc != 0)
+		goto out;
+	rc = mdb_cursor_set(mc, &key, &data,
+		mc->mc_xcursor == NULL ? MDB_SET : MDB_GET_BOTH, &exact);
+#else
+	mdb_cursor_dup(csrc, mc);
+#endif
+out:
+	if (rc != 0) {
+		mdb_cursor_close(mc);
+		return rc;
+	}
+	*cursor = mc;
+	return 0;
+}
+
 int
 mdb_cursor_renew(MDB_txn *txn, MDB_cursor *mc)
 {

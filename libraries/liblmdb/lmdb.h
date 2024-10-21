@@ -1519,6 +1519,19 @@ int  mdb_cursor_open(MDB_txn *txn, MDB_dbi dbi, MDB_cursor **cursor);
 	 */
 void mdb_cursor_close(MDB_cursor *cursor);
 
+	/** @brief Duplicate a cursor handle.
+	 *
+	 * @param[in] csrc A cursor handle returned by #mdb_cursor_open()
+	 * @param[out] cursor Address where the new #MDB_cursor handle will be stored
+	 * @return A non-zero error value on failure and 0 on success. Some possible
+	 * errors are:
+	 * <ul>
+	 *	<li>EINVAL - an invalid parameter was specified.
+	 *	<li>ENOMEM - out of memory.
+	 * </ul>
+	 */
+int mdb_cursor_duplicate(MDB_cursor *csrc, MDB_cursor **cursor);
+
 	/** @brief Renew a cursor handle.
 	 *
 	 * A cursor is associated with a specific transaction and database.
