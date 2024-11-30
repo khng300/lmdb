@@ -236,6 +236,9 @@ typedef int mdb_filehandle_t;
 /** Library patch version */
 #define MDB_VERSION_PATCH	90
 
+/* mdb_cursor_dup is available */
+#define HAVE_MDB_CURSOR_DUP 1
+
 /** Combine args a,b,c into a single integer for easy version comparisons */
 #define MDB_VERINT(a,b,c)	(((a) << 24) | ((b) << 16) | (c))
 
@@ -1516,6 +1519,19 @@ int  mdb_cursor_open(MDB_txn *txn, MDB_dbi dbi, MDB_cursor **cursor);
 	 * @param[in] cursor A cursor handle returned by #mdb_cursor_open()
 	 */
 void mdb_cursor_close(MDB_cursor *cursor);
+
+	/** @brief Duplicate a cursor handle.
+	 *
+	 * @param[in] csrc A cursor handle returned by #mdb_cursor_open()
+	 * @param[out] cursor Address where the new #MDB_cursor handle will be stored
+	 * @return A non-zero error value on failure and 0 on success. Some possible
+	 * errors are:
+	 * <ul>
+	 *	<li>EINVAL - an invalid parameter was specified.
+	 *	<li>ENOMEM - out of memory.
+	 * </ul>
+	 */
+int mdb_cursor_dup(MDB_cursor *csrc, MDB_cursor **cursor);
 
 	/** @brief Renew a cursor handle.
 	 *
