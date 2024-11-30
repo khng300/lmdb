@@ -3112,7 +3112,7 @@ mdb_env_sync0(MDB_env *env, int force, pgno_t numpgs)
 		&& (env->me_flags & MDB_WRITEMAP)
 #endif
 		) {
-		if (env->me_flags & MDB_WRITEMAP) {
+		if ((env->me_flags & MDB_WRITEMAP) && !(env->me_flags & MDB_WRITEMAP_FSYNC)) {
 			int flags = ((env->me_flags & MDB_MAPASYNC) && !force)
 				? MS_ASYNC : MS_SYNC;
 			if (MDB_MSYNC(env->me_map, env->me_psize * numpgs, flags))
@@ -4777,7 +4777,10 @@ mdb_env_write_meta(MDB_txn *txn)
 			r2 = (ptr - env->me_map) & (env->me_os_psize - 1);
 			ptr -= r2;
 			meta_size += r2;
-			if (MDB_MSYNC(ptr, meta_size, rc)) {
+			if ((flags & MDB_WRITEMAP_FSYNC) && MDB_FDATASYNC(env->me_fd)) {
+				rc = ErrCode();
+				goto fail;
+			} else if (MDB_MSYNC(ptr, meta_size, rc)) {
 				rc = ErrCode();
 				goto fail;
 			}
@@ -6074,7 +6077,7 @@ mdb_env_envflags(MDB_env *env)
 	 *	at runtime. Changing other flags requires closing the
 	 *	environment and re-opening it with the new flags.
 	 */
-#define	CHANGEABLE	(MDB_NOSYNC|MDB_NOMETASYNC|MDB_MAPASYNC|MDB_NOMEMINIT)
+#define	CHANGEABLE	(MDB_NOSYNC|MDB_NOMETASYNC|MDB_MAPASYNC|MDB_NOMEMINIT|MDB_WRITEMAP_FSYNC)
 #define	CHANGELESS	(MDB_FIXEDMAP|MDB_NOSUBDIR|MDB_RDONLY| \
 	MDB_WRITEMAP|MDB_NOTLS|MDB_NOLOCK|MDB_NORDAHEAD|MDB_PREVSNAPSHOT|MDB_REMAP_CHUNKS)
 #define EXPOSED		(CHANGEABLE|CHANGELESS | MDB_ENCRYPT)
