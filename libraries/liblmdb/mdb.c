@@ -2309,6 +2309,46 @@ mdb_dlist_free(MDB_txn *txn)
 #endif
 
 static void
+mdb_page_ref(MDB_txn *txn, MDB_page *mp)
+{
+	pgno_t pgno;
+	MDB_ID3L tl = txn->mt_rpages;
+	unsigned x, rem;
+	if (IS_SUBP(mp) || IS_DIRTY_NW(txn, mp))
+		return;
+	rem = mp->mp_pgno & (MDB_RPAGE_CHUNK-1);
+	pgno = mp->mp_pgno ^ rem;
+	x = mdb_mid3l_search(tl, pgno);
+	if (x != tl[0].mid && tl[x+1].mid == mp->mp_pgno)
+		x++;
+	if (tl[x].mref)
+		tl[x].mref++;
+}
+#define MDB_PAGE_REF(txn, mp) \
+	(MDB_REMAPPING(txn->mt_env->me_flags) ? mdb_page_ref(txn, mp) : (void)0)
+
+static void
+mdb_cursor_ref(MDB_cursor *mc)
+{
+	int i;
+	if (mc->mc_txn->mt_rpages[0].mid) {
+		if (!mc->mc_snum || !mc->mc_pg[0] || IS_SUBP(mc->mc_pg[0]))
+			return;
+		for (i=0; i<mc->mc_snum; i++)
+			mdb_page_ref(mc->mc_txn, mc->mc_pg[i]);
+		if (MC_OVPG(mc))
+			mdb_page_ref(mc->mc_txn, MC_OVPG(mc));
+		if (MC_KEY_OVPG(mc))
+			mdb_page_ref(mc->mc_txn, MC_KEY_OVPG(mc));
+	}
+}
+#define MDB_CURSOR_REF(mc, force) \
+	((MDB_REMAPPING((mc)->mc_txn->mt_env->me_flags) && \
+	 ((force) || ((mc)->mc_flags & C_INITIALIZED))) \
+	 ? mdb_cursor_ref(mc) \
+	 : (void)0)
+
+static void
 mdb_page_unref(MDB_txn *txn, MDB_page *mp)
 {
 	pgno_t pgno;
@@ -9649,6 +9689,81 @@ mdb_cursor_open(MDB_txn *txn, MDB_dbi dbi, MDB_cursor **ret)
 	*ret = mc;
 
 	return MDB_SUCCESS;
+}
+
+/** Copy the contents of an xcursor.
+ * @param[in] src_mx The xcursor to copy from.
+ * @param[out] mx The xcursor to copy to.
+ */
+static void
+mdb_xcursor_dup(const MDB_xcursor *src_mx, MDB_xcursor *mx)
+{
+	MDB_cursor		*mc = &mx->mx_cursor;
+	unsigned int	i;
+
+	mx->mx_db = src_mx->mx_db;
+	mx->mx_dbx = src_mx->mx_dbx;
+	mx->mx_dbflag = src_mx->mx_dbflag;
+	mc->mc_txn = src_mx->mx_cursor.mc_txn;
+	mc->mc_dbi = src_mx->mx_cursor.mc_dbi;
+	mc->mc_db = &mx->mx_db;
+	mc->mc_dbx = &mx->mx_dbx;
+	mc->mc_dbflag = &mx->mx_dbflag;
+	mc->mc_snum = src_mx->mx_cursor.mc_snum;
+	mc->mc_top = src_mx->mx_cursor.mc_top;
+	mc->mc_flags = src_mx->mx_cursor.mc_flags;
+	for (i=0; i<src_mx->mx_cursor.mc_snum; i++) {
+		mc->mc_pg[i] = src_mx->mx_cursor.mc_pg[i];
+		mc->mc_ki[i] = src_mx->mx_cursor.mc_ki[i];
+	}
+	MC_SET_OVPG(mc, MC_OVPG(&src_mx->mx_cursor));
+	MC_SET_KEY_OVPG(mc, MC_KEY_OVPG(&src_mx->mx_cursor));
+	MDB_CURSOR_REF(mc, 0);
+}
+
+/** Copy the contents of an cursor.
+ * @param[in] src_mc The cursor to copy from.
+ * @param[out] mc The cursor to copy to.
+ */
+static void
+_mdb_cursor_dup(const MDB_cursor *src_mc, MDB_cursor *mc)
+{
+	unsigned int	i;
+
+	mc->mc_dbi = src_mc->mc_dbi;
+	mc->mc_db = src_mc->mc_db;
+	mc->mc_dbx = src_mc->mc_dbx;
+	mc->mc_dbflag = src_mc->mc_dbflag;
+	mc->mc_snum = src_mc->mc_snum;
+	mc->mc_top = src_mc->mc_top;
+	mc->mc_flags = src_mc->mc_flags;
+	for (i=0; i<src_mc->mc_snum; i++) {
+		mc->mc_pg[i] = src_mc->mc_pg[i];
+		mc->mc_ki[i] = src_mc->mc_ki[i];
+	}
+	MC_SET_OVPG(mc, MC_OVPG(src_mc));
+	MC_SET_KEY_OVPG(mc, MC_KEY_OVPG(src_mc));
+	MDB_CURSOR_REF(mc, 0);
+	if (src_mc->mc_xcursor != NULL)
+		mdb_xcursor_dup(src_mc->mc_xcursor, mc->mc_xcursor);
+}
+
+int
+mdb_cursor_dup(MDB_cursor *csrc, MDB_cursor **cursor)
+{
+	MDB_cursor	*mc;
+	int			rc;
+
+	rc = mdb_cursor_open(csrc->mc_txn, csrc->mc_dbi, &mc);
+	if (rc != 0)
+		return rc;
+	if (!(csrc->mc_flags & C_INITIALIZED))
+		goto done;
+	_mdb_cursor_dup(csrc, mc);
+
+done:
+	*cursor = mc;
+	return 0;
 }
 
 int
