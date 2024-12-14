@@ -1113,14 +1113,6 @@ typedef struct MDB_ovpage {
 	mdb_size_t	op_pages;
 } MDB_ovpage;
 
-#if OVERFLOW_NOTYET
-	/** Header for a dirty overflow page in memory */
-typedef struct MDB_dovpage {
-	MDB_page_header mp_hdr;
-	void	*mp_ptr;
-} MDB_dovpage;
-#endif
-
 	/** The number of overflow pages needed to store the given size. */
 #define OVPAGES(size, psize)	((PAGEHDRSZ-1 + (size)) / (psize) + 1)
 
@@ -1371,10 +1363,6 @@ struct MDB_txn {
 		/** For read txns: This thread/txn's reader table slot, or NULL. */
 		MDB_reader	*reader;
 	} mt_u;
-#if OVERFLOW_NOTYET
-	/** The sorted list of dirty overflow pages. */
-	MDB_ID2L	mt_dirty_ovs;
-#endif
 	/** Array of records for each DB known in the environment. */
 	MDB_dbx		*mt_dbxs;
 	/** Array of MDB_db records for each known DB */
@@ -2204,33 +2192,12 @@ mdb_page_alloc(MDB_cursor *mc, int num, MDB_page **mp)
 	MDB_cursor m2;
 	int found_old = 0;
 
-#if OVERFLOW_NOTYET
-	MDB_dovpage *dph = NULL;
-
-	if (ov) {
-		if (!txn->mt_dirty_ovs) {
-			txn->mt_dirty_ovs = mdb_mid2l_alloc(16);
-			if (!txn->mt_dirty_ovs)
-				return ENOMEM;
-		} else if (mdb_mid2l_need(&txn->mt_dirty_ovs, txn->mt_dirty_ovs[0].mid + 1))
-			return ENOMEM;
-		dph = malloc(sizeof(MDB_dovpage));
-	}
-#endif
-
 	/* If there are any loose pages, just use them */
 	if (num == 1 && txn->mt_loose_pgs) {
 		np = txn->mt_loose_pgs;
 		txn->mt_loose_pgs = NEXT_LOOSE_PAGE(np);
 		txn->mt_loose_count--;
 		DPRINTF(("db %d use loose page %"Yu, DDBI(mc), np->mp_pgno));
-#if OVERFLOW_NOTYET
-		if (ov) {
-			dph->mp_hdr = np->mp_hdr;
-			dph->mp_ptr = np;
-			np = (MDB_page *)dph;
-		}
-#endif
 		*mp = np;
 		np->mp_flags &= P_ADM_FLAGS;
 		return MDB_SUCCESS;
@@ -2368,13 +2335,6 @@ search_done:
 	} else {
 		txn->mt_next_pgno = pgno + num;
 	}
-#if OVERFLOW_NOTYET
-	if (ov) {
-		dph->mp_hdr = np->mp_hdr;
-		dph->mp_ptr = np;
-		np = (MDB_page *)dph;
-	}
-#endif
 	np->mp_pgno = pgno;
 	SET_PGTXNID(txn, np);
 	np->mp_flags = 0;
@@ -2384,10 +2344,6 @@ search_done:
 	return MDB_SUCCESS;
 
 fail:
-#if OVERFLOW_NOTYET
-	if (dph)
-		free(dph);
-#endif
 	txn->mt_flags |= MDB_TXN_ERROR;
 	return rc;
 }
@@ -2761,9 +2717,6 @@ mdb_txn_renew0(MDB_txn *txn)
 		txn->mt_loose_count = 0;
 		txn->mt_free_pgs = env->me_free_pgs;
 		txn->mt_free_pgs[0] = 0;
-#if OVERFLOW_NOTYET
-		txn->mt_dirty_ovs = NULL;
-#endif
 		env->me_txn = txn;
 		memcpy(txn->mt_dbiseqs, env->me_dbiseqs, env->me_maxdbs * sizeof(unsigned int));
 	}
@@ -2966,9 +2919,6 @@ mdb_txn_end(MDB_txn *txn, unsigned mode)
 		/* The writer mutex was locked in mdb_txn_begin. */
 		if (env->me_txns)
 			UNLOCK_MUTEX(env->me_wmutex);
-#if OVERFLOW_NOTYET
-		mdb_mid2l_free(txn->mt_dirty_ovs);
-#endif
 
 		mdb_midl_free(pghead);
 	}
