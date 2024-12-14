@@ -47,7 +47,6 @@ PROGS	= $(IPROGS) mtest mtest2 mtest3 mtest4 mtest5
 RPROGS	= mtest_remap mtest_enc mtest_enc2
 
 all:	$(ILIBS) $(PROGS)
-# Requires CPPFLAGS=-DMDB_VL32 and/or -DMDB_RPAGE_CACHE
 rall:	all $(RPROGS)
 
 install: $(ILIBS) $(IPROGS) $(IHDRS)

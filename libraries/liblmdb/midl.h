@@ -186,22 +186,6 @@ void mdb_mid2l_free(MDB_ID2L ids);
 
 int mdb_mid2l_need( MDB_ID2L *idp, unsigned num );
 
-#if MDB_RPAGE_CACHE
-typedef struct MDB_ID3 {
-	MDB_ID mid;		/**< The ID */
-	void *mptr;		/**< The pointer */
-	void *menc;		/**< Decrypted pointer */
-	unsigned int mcnt;		/**< Number of pages */
-	unsigned short mref;	/**< Refcounter */
-	unsigned short muse;	/**< Bitmap of used pages */
-} MDB_ID3;
-
-typedef MDB_ID3 *MDB_ID3L;
-
-unsigned mdb_mid3l_search( MDB_ID3L ids, MDB_ID id );
-int mdb_mid3l_insert( MDB_ID3L ids, MDB_ID3 *id );
-
-#endif /* MDB_RPAGE_CACHE */
 /** @} */
 /** @} */
 #ifdef __cplusplus

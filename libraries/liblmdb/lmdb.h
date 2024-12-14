@@ -187,16 +187,7 @@ typedef	mode_t	mdb_mode_t;
 # define MDB_FMT_Z	"z"			/**< printf/scanf format modifier for size_t */
 #endif
 
-#if !defined(MDB_RPAGE_CACHE) || (defined(MDB_VL32) && !(MDB_RPAGE_CACHE))
-/** Support #MDB_REMAP_CHUNKS. Implied by MDB_VL32. Define as 0 to disable. */
-#define MDB_RPAGE_CACHE	1
-#endif
-
-#ifndef MDB_VL32
 /** Unsigned type used for mapsize, entry counts and page/transaction IDs.
- *
- *	It is normally size_t, hence the name. Defining MDB_VL32 makes it
- *	uint64_t, but do not try this unless you know what you are doing.
  */
 typedef size_t	mdb_size_t;
 # define MDB_SIZE_MAX	SIZE_MAX	/**< max #mdb_size_t */
@@ -204,13 +195,6 @@ typedef size_t	mdb_size_t;
 # define MDB_PRIy(t)	MDB_FMT_Z #t
 /** #mdb_size_t scanf formats, \b t = one of [dioux] without quotes */
 # define MDB_SCNy(t)	MDB_FMT_Z #t
-#else
-typedef uint64_t	mdb_size_t;
-# define MDB_SIZE_MAX	UINT64_MAX
-# define MDB_PRIy(t)	PRI##t##64
-# define MDB_SCNy(t)	SCN##t##64
-# define mdb_env_create	mdb_env_create_vl32	/**< Prevent mixing with non-VL32 builds */
-#endif
 
 /** An abstraction for a file handle.
  *	On POSIX systems file handles are small integers. On Windows
@@ -315,40 +299,11 @@ typedef int  (MDB_cmp_func)(const MDB_val *a, const MDB_val *b);
  */
 typedef void (MDB_rel_func)(MDB_val *item, void *oldptr, void *newptr, void *relctx);
 
-#if MDB_RPAGE_CACHE
-/** @brief A callback function used to encrypt/decrypt pages in the env.
- *
- * Encrypt or decrypt the data in src and store the result in dst using the
- * provided key. The result must be the same number of bytes as the input.
- * @param[in] src The input data to be transformed.
- * @param[out] dst Storage for the result.
- * @param[in] key An array of three values: key[0] is the encryption key,
- * key[1] is the initialization vector, and key[2] is the authentication
- * data, if any.
- * @param[in] encdec 1 to encrypt, 0 to decrypt.
- * @return A non-zero error value on failure and 0 on success.
- */
-typedef int (MDB_enc_func)(const MDB_val *src, MDB_val *dst, const MDB_val *key, int encdec);
-
-/** @brief A callback function used to checksum pages in the env.
- *
- * Compute the checksum of the data in src and store the result in dst,
- * An optional key may be used with keyed hash algorithms.
- * @param[in] src The input data to be transformed.
- * @param[out] dst Storage for the result.
- * @param[in] key An encryption key, if encryption was configured. This
- * parameter will be NULL if there is no key.
- */
-typedef void (MDB_sum_func)(const MDB_val *src, MDB_val *dst, const MDB_val *key);
-#endif
-
 /** @defgroup	mdb_env	Environment Flags
  *	@{
  */
 	/** mmap at a fixed address (experimental) */
 #define MDB_FIXEDMAP	0x01
-	/** encrypted DB - read-only flag, set by #mdb_env_set_encrypt() */
-#define MDB_ENCRYPT		0x2000U
 	/** no environment directory */
 #define MDB_NOSUBDIR	0x4000
 	/** don't fsync after commit */
@@ -371,8 +326,6 @@ typedef void (MDB_sum_func)(const MDB_val *src, MDB_val *dst, const MDB_val *key
 #define MDB_NOMEMINIT	0x1000000
 	/** use the previous snapshot rather than the latest one */
 #define MDB_PREVSNAPSHOT	0x2000000
-	/** don't use a single mmap, remap individual chunks (needs MDB_RPAGE_CACHE) */
-#define MDB_REMAP_CHUNKS	0x4000000
 	/** Do fsync instead of msync for MDB_WRITEMAP */
 #define MDB_WRITEMAP_FSYNC		0x8000000
 /** @} */
@@ -523,14 +476,8 @@ typedef enum MDB_cursor_op {
 #define MDB_BAD_DBI		(-30780)
 	/** Unexpected problem - txn should abort */
 #define MDB_PROBLEM		(-30779)
-	/** Page checksum incorrect */
-#define MDB_BAD_CHECKSUM	(-30778)
-	/** Encryption/decryption failed */
-#define MDB_CRYPTO_FAIL		(-30777)
-	/** Environment encryption mismatch */
-#define MDB_ENV_ENCRYPTION	(-30776)
 	/** The last defined error code */
-#define MDB_LAST_ERRCODE	MDB_ENV_ENCRYPTION
+#define MDB_LAST_ERRCODE	MDB_PROBLEM
 /** @} */
 
 /** @brief Statistics for a database in the environment */
@@ -1032,31 +979,6 @@ typedef void MDB_assert_func(MDB_env *env, const char *msg);
 	 * @return A non-zero error value on failure and 0 on success.
 	 */
 int  mdb_env_set_assert(MDB_env *env, MDB_assert_func *func);
-
-#if MDB_RPAGE_CACHE
-	/** @brief Set encryption on an environment.
-	 *
-	 * This must be called before #mdb_env_open().
-	 * It implicitly sets #MDB_REMAP_CHUNKS on the env.
-	 * @param[in] env An environment handle returned by #mdb_env_create().
-	 * @param[in] func An #MDB_enc_func function.
-	 * @param[in] key The encryption key.
-	 * @param[in] size The size of authentication data in bytes, if any.
-	 * Set this to zero for unauthenticated encryption mechanisms.
-	 * @return A non-zero error value on failure and 0 on success.
-	 */
-int mdb_env_set_encrypt(MDB_env *env, MDB_enc_func *func, const MDB_val *key, unsigned int size);
-
-	/** @brief Set checksums on an environment.
-	 *
-	 * This must be called before #mdb_env_open().
-	 * @param[in] env An environment handle returned by #mdb_env_create().
-	 * @param[in] func An #MDB_sum_func function.
-	 * @param[in] size The size of computed checksum values, in bytes.
-	 * @return A non-zero error value on failure and 0 on success.
-	 */
-int mdb_env_set_checksum(MDB_env *env, MDB_sum_func *func, unsigned int size);
-#endif
 
 	/** @brief Create a transaction for use with the environment.
 	 *
@@ -1741,74 +1663,6 @@ int	mdb_reader_list(MDB_env *env, MDB_msg_func *func, void *ctx);
 	 * @return 0 on success, non-zero on failure.
 	 */
 int	mdb_reader_check(MDB_env *env, int *dead);
-/**	@} */
-
-/** @defgroup crypto LMDB Encryption Helper API
- *	@{
- *	@brief Helpers for setting up encryption
- */
-
-	/** @brief A function for converting a string into an encryption key.
-	 *
-	 * @param[in] passwd The string to be converted.
-	 * @param[in,out] key The resulting key. The caller must
-	 * provide the space for the key.
-	 * @return 0 on success, non-zero on failure.
-	 */
-typedef int (MDB_str2key_func)(const char *passwd, MDB_val *key);
-
-	/** @brief A structure for dynamically loaded crypto modules.
-	 *
-	 * This is the information that the command line tools expect
-	 * in order to operate on encrypted or checksummed environments.
-	 */
-typedef struct MDB_crypto_funcs {
-	MDB_str2key_func *mcf_str2key;
-	MDB_enc_func *mcf_encfunc;
-	MDB_sum_func *mcf_sumfunc;
-	int mcf_keysize;	/**< The size of an encryption key, in bytes */
-	int mcf_esumsize;	/**< The size of the MAC, for authenticated encryption */
-	int mcf_sumsize;	/**< The size of the checksum, for plain checksums */
-} MDB_crypto_funcs;
-
-	/** @brief The function that returns the #MDB_crypto_funcs structure.
-	 *
-	 * The command line tools expect this function to be named "MDB_crypto".
-	 * It must be exported by the dynamic module so that the tools can use it.
-	 * @return A pointer to a #MDB_crypto_funcs structure.
-	 */
-typedef MDB_crypto_funcs *(MDB_crypto_hooks)(void);
-
-	/** @brief Load a dynamically loadable module.
-	 *
-	 * @param[in] file The pathname of the module to load.
-	 * @param[in] symname The name of a symbol to resolve in the module.
-	 * @param[out] mcf_ptr The crypto hooks returned from the module.
-	 * @param[out] errmsg Messages for any errors from trying to load the module.
-	 * @return The handle to the loadable module that can be unloaded by #mdb_modunload(),
-	 * or NULL if loading failed.
-	 */
-void *mdb_modload(const char *file, const char *symname,
-			MDB_crypto_funcs **mcf_ptr, char **errmsg);
-
-	/** @brief Unload a dynamically loaded module.
-	 *
-	 * All environments that used the functions in the module must be closed
-	 * before unloading the module.
-	 * @param[in] handle The handle returned by #mdb_modload().
-	 */
-void mdb_modunload(void *handle);
-
-	/** @brief Set an environment to use the given crypto functions.
-	 *
-	 * This is just a wrapper around #mdb_env_set_encrypt() to ease use of
-	 * dynamically loaded crypto functions.
-	 * @param[in] env An environment handle returned by #mdb_env_create()
-	 * @param[in] funcs The crypto hooks retrieved by #mdb_modload().
-	 * @param[in] passphrase The secret used to generate the encryption key for the environment.
-	 */
-void mdb_modsetup(MDB_env *env, MDB_crypto_funcs *cf, const char *passphrase);
-
 /**	@} */
 
 #ifdef __cplusplus
