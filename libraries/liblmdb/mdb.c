@@ -9768,6 +9768,13 @@ mdb_env_info(MDB_env *env, MDB_envinfo *arg)
 	return MDB_SUCCESS;
 }
 
+unsigned int
+mdb_page_header_size(void)
+{
+
+	return (uintptr_t)METADATA(NULL);
+}
+
 /** Set the default comparison functions for a database.
  * Called immediately after a database is opened to set the defaults.
  * The user can then override them with #mdb_set_compare() or

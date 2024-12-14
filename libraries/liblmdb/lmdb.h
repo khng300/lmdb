@@ -977,6 +977,11 @@ typedef void MDB_assert_func(MDB_env *env, const char *msg);
 	 */
 int  mdb_env_set_assert(MDB_env *env, MDB_assert_func *func);
 
+	/** Get the page header size
+	 * @return The page header size in bytes.
+	 */
+unsigned int	mdb_page_header_size(void);
+
 	/** @brief Create a transaction for use with the environment.
 	 *
 	 * The transaction handle may be discarded using #mdb_txn_abort() or #mdb_txn_commit().
