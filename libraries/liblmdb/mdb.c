@@ -9750,7 +9750,7 @@ mdb_env_stat(MDB_env *env, MDB_stat *arg)
 }
 
 int ESECT
-mdb_env_info(MDB_env *env, MDB_envinfo *arg)
+mdb_env_info2(MDB_env *env, MDB_envinfo2 *arg)
 {
 	MDB_meta *meta;
 
@@ -9762,9 +9762,31 @@ mdb_env_info(MDB_env *env, MDB_envinfo *arg)
 	arg->me_last_pgno = meta->mm_last_pg;
 	arg->me_last_txnid = meta->mm_txnid;
 
+	arg->me_map = env->me_map;
 	arg->me_mapsize = env->me_mapsize;
+	arg->me_psize = env->me_psize;
 	arg->me_maxreaders = env->me_maxreaders;
 	arg->me_numreaders = env->me_txns ? env->me_txns->mti_numreaders : 0;
+	return MDB_SUCCESS;
+}
+
+int ESECT
+mdb_env_info(MDB_env *env, MDB_envinfo *arg)
+{
+	MDB_envinfo2 ei2;
+	int ret;
+
+	if (env == NULL || arg == NULL)
+		return EINVAL;
+	ret = mdb_env_info2(env, &ei2);
+	if (ret)
+		return ret;
+	arg->me_mapaddr = ei2.me_mapaddr;
+	arg->me_last_pgno = ei2.me_last_pgno;
+	arg->me_last_txnid = ei2.me_last_txnid;
+	arg->me_mapsize = ei2.me_mapsize;
+	arg->me_maxreaders = ei2.me_maxreaders;
+	arg->me_numreaders = ei2.me_numreaders;
 	return MDB_SUCCESS;
 }
 

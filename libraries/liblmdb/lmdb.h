@@ -498,6 +498,18 @@ typedef struct MDB_envinfo {
 	unsigned int me_numreaders;		/**< max reader slots used in the environment */
 } MDB_envinfo;
 
+/** @brief Information about the environment version 2 */
+typedef struct MDB_envinfo2 {
+	void *		me_mapaddr;		/**< Address of map, if fixed */
+	mdb_size_t	me_last_pgno;		/**< ID of the last used page */
+	mdb_size_t	me_last_txnid;		/**< ID of the last committed transaction */
+	void *		me_map;			/**< Address of map */
+	mdb_size_t	me_mapsize;		/**< Size of the data memory map */
+	unsigned int	me_psize;		/**< Size of a database page */
+	unsigned int	me_maxreaders;		/**< max reader slots in the environment */
+	unsigned int	me_numreaders;		/**< max reader slots used in the environment */
+} MDB_envinfo2;
+
 	/** @brief Return the LMDB library version information.
 	 *
 	 * @param[out] major if non-NULL, the library major version number is copied here
@@ -751,6 +763,14 @@ int  mdb_env_stat(MDB_env *env, MDB_stat *stat);
 	 * 	where the information will be copied
 	 */
 int  mdb_env_info(MDB_env *env, MDB_envinfo *stat);
+
+	/** @brief Return information about the LMDB environment version 2.
+	 *
+	 * @param[in] env An environment handle returned by #mdb_env_create()
+	 * @param[out] stat The address of an #MDB_envinfo2 structure
+	 * 	where the information will be copied
+	 */
+int  mdb_env_info2(MDB_env *env, MDB_envinfo2 *stat);
 
 	/** @brief Flush the data buffers to disk.
 	 *
