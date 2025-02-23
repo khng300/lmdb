@@ -1106,8 +1106,10 @@ typedef struct MDB_page2 {
 	/** Test if a page is a sub page */
 #define IS_SUBP(p)	 F_ISSET(MP_FLAGS(p), P_SUBP)
 
+	/** Test if this txnid is writable */
+#define IS_TXNID_MUTABLE(txn, txnid)	((txnid) >= (txn)->mt_txnid)
 	/** Test if this non-sub page is writable in this txn */
-#define IS_MUTABLE(txn, p)	((p)->mp_txnid >= (txn)->mt_txnid)
+#define IS_MUTABLE(txn, p)	(IS_TXNID_MUTABLE((txn), (p)->mp_txnid))
 
 	/** Info about overflow page, stored in an F_BIGDATA node */
 typedef struct MDB_ovpage {
@@ -1118,6 +1120,9 @@ typedef struct MDB_ovpage {
 
 	/** The number of overflow pages needed to store the given size. */
 #define OVPAGES(size, psize)	((PAGEHDRSZ-1 + (size)) / (psize) + 1)
+
+	/** The number of externally-managed pages needed to store the given size. */
+#define NUMEXTDATAPAGES(size, psize)	(((size) - 1) / (psize) + 1)
 
 	/** Link in #MDB_txn.%mt_loose_pgs list.
 	 *  Kept outside the page header, which is needed when reusing the page.
@@ -1269,6 +1274,12 @@ typedef struct MDB_db {
 	pgno_t		md_root;		/**< the root page of this tree */
 } MDB_db;
 
+	/** Information about a externelly-managed allocation */
+typedef struct MDB_extalloc {
+	txnid_t		me_txnid;
+	uint32_t	me_pages;
+} MDB_extalloc;
+
 #define MDB_VALID	0x8000		/**< DB handle is valid, for me_dbflags */
 #define PERSISTENT_FLAGS	(0xffff & ~(MDB_VALID))
 	/** #mdb_dbi_open() flags */
@@ -1279,8 +1290,10 @@ typedef struct MDB_db {
 #define	FREE_DBI	0
 	/** Handle for the default DB. */
 #define	MAIN_DBI	1
-	/** Number of DBs in metapage (free and main) - also hardcoded elsewhere */
-#define CORE_DBS	2
+	/** Handle for the externally-managed pages DB. */
+#define	EXTALLOC_DBI	2
+	/** Number of DBs in metapage (free, main and extdata) - also hardcoded elsewhere */
+#define CORE_DBS	3
 
 	/** Number of meta pages - also hardcoded elsewhere */
 #define NUM_METAS	2
@@ -1599,9 +1612,12 @@ typedef struct MDB_ntxn {
 #define TXN_DBI_CHANGED(txn, dbi) \
 	((txn)->mt_dbiseqs[dbi] != (txn)->mt_env->me_dbiseqs[dbi])
 
+static int  _mdb_page_alloc(MDB_cursor *mc, int num, int is_extalloc, MDB_page **mp);
 static int  mdb_page_alloc(MDB_cursor *mc, int num, MDB_page **mp);
 static int  mdb_page_new(MDB_cursor *mc, uint32_t flags, int num, MDB_page **mp);
 static int  mdb_page_touch(MDB_cursor *mc);
+static int  mdb_page_dealloc(MDB_txn *txn, pgno_t pg, unsigned int pages,
+			    txnid_t txnid);
 
 #define MDB_END_NAMES {"committed", "empty-commit", "abort", "reset", \
 	"reset-tmp", "fail-begin", "fail-beginchild"}
@@ -1739,6 +1755,12 @@ static char *const mdb_errstr[] = {
 	"MDB_BAD_DBI: The specified DBI handle was closed/changed unexpectedly",
 	"MDB_PROBLEM: Unexpected problem - txn should abort",
 };
+
+void *
+mdb_reladdr2addr(MDB_txn *txn, intptr_t reladdr)
+{
+	return reladdr + txn->mt_env->me_map;
+}
 
 char *
 mdb_strerror(int err)
@@ -2153,12 +2175,13 @@ mdb_find_oldest(MDB_txn *txn)
  * @param[in] mc cursor A cursor handle identifying the transaction and
  *	database for which we are allocating.
  * @param[in] num the number of pages to allocate.
+ * @param[in] is_extalloc externally-managed pages are required.
  * @param[out] mp Address of the allocated page(s). Requests for multiple pages
  *  will always be satisfied by a single contiguous chunk of memory.
  * @return 0 on success, non-zero on failure.
  */
 static int
-mdb_page_alloc(MDB_cursor *mc, int num, MDB_page **mp)
+_mdb_page_alloc(MDB_cursor *mc, int num, int is_extalloc, MDB_page **mp)
 {
 #ifdef MDB_PARANOID	/* Seems like we can ignore this now */
 	/* Get at most <Max_retries> more freeDB records once me_pghead
@@ -2183,7 +2206,7 @@ mdb_page_alloc(MDB_cursor *mc, int num, MDB_page **mp)
 	int found_old = 0;
 
 	/* If there are any loose pages, just use them */
-	if (num == 1 && txn->mt_loose_pgs) {
+	if (num == 1 && txn->mt_loose_pgs && !is_extalloc) {
 		np = txn->mt_loose_pgs;
 		txn->mt_loose_pgs = NEXT_LOOSE_PAGE(np);
 		txn->mt_loose_count--;
@@ -2325,9 +2348,12 @@ search_done:
 	} else {
 		txn->mt_next_pgno = pgno + num;
 	}
-	np->mp_pgno = pgno;
-	SET_PGTXNID(txn, np);
-	np->mp_flags = 0;
+	if (!is_extalloc) {
+		memset(np, 0, sizeof(MDB_page));
+		np->mp_pgno = pgno;
+		SET_PGTXNID(txn, np);
+		np->mp_flags = 0;
+	}
 	txn->mt_flags |= MDB_TXN_DIRTY;
 	*mp = np;
 
@@ -2336,6 +2362,12 @@ search_done:
 fail:
 	txn->mt_flags |= MDB_TXN_ERROR;
 	return rc;
+}
+
+static int
+mdb_page_alloc(MDB_cursor *mc, int num, MDB_page **mp)
+{
+	return _mdb_page_alloc(mc, num, 0, mp);
 }
 
 /** Copy the used portions of a non-overflow page.
@@ -2664,6 +2696,7 @@ mdb_txn_renew0(MDB_txn *txn)
 		txn->mt_dbs[i].md_flags = x & PERSISTENT_FLAGS;
 		txn->mt_dbflags[i] = (x & MDB_VALID) ? DB_VALID|DB_USRVALID|DB_STALE : 0;
 	}
+	txn->mt_dbflags[EXTALLOC_DBI] = DB_VALID|DB_USRVALID;
 	txn->mt_dbflags[MAIN_DBI] = DB_VALID|DB_USRVALID;
 	txn->mt_dbflags[FREE_DBI] = DB_VALID;
 
@@ -3298,6 +3331,7 @@ mdb_env_init_meta0(MDB_env *env, MDB_meta *meta)
 	meta->mm_flags |= MDB_INTEGERKEY; /* this is mm_dbs[FREE_DBI].md_flags */
 	meta->mm_dbs[FREE_DBI].md_root = P_INVALID;
 	meta->mm_dbs[MAIN_DBI].md_root = P_INVALID;
+	meta->mm_dbs[EXTALLOC_DBI].md_root = P_INVALID;
 }
 
 /** Write the environment parameters of a freshly created DB environment.
@@ -3402,6 +3436,7 @@ mdb_env_write_meta(MDB_txn *txn)
 		mp->mm_mapsize = mapsize;
 		mp->mm_dbs[FREE_DBI] = txn->mt_dbs[FREE_DBI];
 		mp->mm_dbs[MAIN_DBI] = txn->mt_dbs[MAIN_DBI];
+		mp->mm_dbs[EXTALLOC_DBI] = txn->mt_dbs[EXTALLOC_DBI];
 		mp->mm_last_pg = txn->mt_next_pgno - 1;
 #if (__GNUC__ * 100 + __GNUC_MINOR__ >= 404) && /* TODO: portability */	\
 	!(defined(__i386__) || defined(__x86_64__))
@@ -3434,6 +3469,7 @@ mdb_env_write_meta(MDB_txn *txn)
 	meta.mm_mapsize = mapsize;
 	meta.mm_dbs[FREE_DBI] = txn->mt_dbs[FREE_DBI];
 	meta.mm_dbs[MAIN_DBI] = txn->mt_dbs[MAIN_DBI];
+	meta.mm_dbs[EXTALLOC_DBI] = txn->mt_dbs[EXTALLOC_DBI];
 	meta.mm_last_pg = txn->mt_next_pgno - 1;
 	meta.mm_txnid = txn->mt_txnid;
 
@@ -4701,8 +4737,10 @@ mdb_env_open(MDB_env *env, const char *path, unsigned int flags, mdb_mode_t mode
 				env->me_txn0 = txn;
 			} else {
 				rc = ENOMEM;
+				goto leave;
 			}
 		}
+		env->me_dbxs[EXTALLOC_DBI].md_cmp = mdb_cmp_long; /* aligned MDB_INTEGERKEY */
 	}
 
 leave:
@@ -5313,40 +5351,54 @@ mdb_page_search(MDB_cursor *mc, MDB_val *key, int flags)
 }
 
 static int
+mdb_page_dealloc(MDB_txn *txn, pgno_t pg, unsigned int pages, txnid_t txnid)
+{
+	MDB_env *env = txn->mt_env;
+	int rc;
+
+	/* If the page is writable in the current transaction,
+	 * we should give it back to our current free list, if any.
+	 * Otherwise put it onto the list of pages we freed in this txn.
+	 *
+	 * Won't create me_pghead: me_pglast must be inited along with it.
+	 */
+	if (IS_TXNID_MUTABLE(txn, txnid) && env->me_pghead) {
+		unsigned i, j;
+		pgno_t *mop;
+		rc = mdb_midl_need(&env->me_pghead, pages);
+		if (rc)
+			return rc;
+		/* Insert in me_pghead */
+		mop = env->me_pghead;
+		j = mop[0] + pages;
+		for (i = mop[0]; i && mop[i] < pg; i--)
+			mop[j--] = mop[i];
+		while (j>i)
+			mop[j--] = pg++;
+		mop[0] += pages;
+	} else {
+		rc = mdb_midl_append_range(&txn->mt_free_pgs, pg, pages);
+		if (rc)
+			return rc;
+	}
+
+	return 0;
+}
+
+static int
 mdb_ovpage_free(MDB_cursor *mc, MDB_page *mp)
 {
 	MDB_txn *txn = mc->mc_txn;
 	pgno_t pg = mp->mp_pgno;
 	unsigned ovpages = mp->mp_pages;
-	MDB_env *env = txn->mt_env;
 	int rc;
 
+	(void)pg;
+
 	DPRINTF(("free ov page %"Yu" (%d)", pg, ovpages));
-	/* If the page is dirty,
-	 * so we should give it back to our current free list, if any.
-	 * Otherwise put it onto the list of pages we freed in this txn.
-	 *
-	 * Won't create me_pghead: me_pglast must be inited along with it.
-	 */
-	if (IS_MUTABLE(txn, mp) && env->me_pghead) {
-		unsigned i, j;
-		pgno_t *mop;
-		rc = mdb_midl_need(&env->me_pghead, ovpages);
-		if (rc)
-			return rc;
-		/* Insert in me_pghead */
-		mop = env->me_pghead;
-		j = mop[0] + ovpages;
-		for (i = mop[0]; i && mop[i] < pg; i--)
-			mop[j--] = mop[i];
-		while (j>i)
-			mop[j--] = pg++;
-		mop[0] += ovpages;
-	} else {
-		rc = mdb_midl_append_range(&txn->mt_free_pgs, pg, ovpages);
-		if (rc)
-			return rc;
-	}
+	rc = mdb_page_dealloc(txn, mp->mp_pgno, ovpages, mp->mp_txnid);
+	if (rc != 0)
+		return rc;
 	mc->mc_db->md_overflow_pages -= ovpages;
 
 	return 0;
@@ -8703,6 +8755,72 @@ mdb_put(MDB_txn *txn, MDB_dbi dbi,
 	txn->mt_cursors[dbi] = &mc;
 	rc = _mdb_cursor_put(&mc, key, data, flags);
 	txn->mt_cursors[dbi] = mc.mc_next;
+	return rc;
+}
+
+int
+mdb_extdata_alloc(MDB_txn *txn, size_t size, intptr_t *reladdr)
+{
+	MDB_cursor mc;
+	MDB_xcursor mx;
+	MDB_val key, data;
+	MDB_extalloc mea;
+	MDB_env *env = txn->mt_env;
+	size_t pages = NUMEXTDATAPAGES(size, env->me_psize);
+	void *mp;
+	pgno_t pgno;
+	int rc;
+
+	if (pages > INT_MAX)
+		return EINVAL;
+	if (txn->mt_flags & (MDB_TXN_RDONLY|MDB_TXN_BLOCKED))
+		return (txn->mt_flags & MDB_TXN_RDONLY) ? EACCES : MDB_BAD_TXN;
+
+	mdb_cursor_init(&mc, txn, EXTALLOC_DBI, &mx);
+	if ((rc = _mdb_page_alloc(&mc, pages, 1, (MDB_page **)&mp)))
+		return rc;
+	pgno = ((char *)mp - env->me_map) / env->me_psize;
+	mea.me_txnid = txn->mt_txnid;
+	mea.me_pages = pages;
+	key.mv_data = &pgno;
+	key.mv_size = sizeof(pgno);
+	data.mv_data = &mea;
+	data.mv_size = sizeof(mea);
+
+	mc.mc_next = txn->mt_cursors[EXTALLOC_DBI];
+	txn->mt_cursors[EXTALLOC_DBI] = &mc;
+	rc = _mdb_cursor_put(&mc, &key, &data, 0);
+	txn->mt_cursors[EXTALLOC_DBI] = mc.mc_next;
+	if (!rc)
+		*reladdr = pgno * txn->mt_env->me_psize;
+	return rc;
+}
+
+int
+mdb_extdata_free(MDB_txn *txn, intptr_t reladdr)
+{
+	MDB_cursor mc;
+	MDB_xcursor mx;
+	MDB_val key, data;
+	MDB_extalloc mea;
+	pgno_t pgno;
+	int rc, exact;
+
+	pgno = reladdr / txn->mt_env->me_psize;
+	key.mv_data = &pgno;
+	key.mv_size = sizeof(pgno);
+
+	mdb_cursor_init(&mc, txn, EXTALLOC_DBI, &mx);
+	rc = mdb_cursor_set(&mc, &key, &data, MDB_SET, &exact);
+	if (rc == 0) {
+		memcpy(&mea, data.mv_data, sizeof(mea));
+		mc.mc_next = txn->mt_cursors[EXTALLOC_DBI];
+		txn->mt_cursors[EXTALLOC_DBI] = &mc;
+		rc = _mdb_cursor_del(&mc, 0);
+		txn->mt_cursors[EXTALLOC_DBI] = mc.mc_next;
+		if (rc == 0)
+			rc = mdb_page_dealloc(mc.mc_txn, pgno, mea.me_pages, mea.me_txnid);
+	}
 	return rc;
 }
 
