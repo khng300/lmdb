@@ -1358,6 +1358,9 @@ int  mdb_put(MDB_txn *txn, MDB_dbi dbi, MDB_val *key, MDB_val *data,
 	 */
 int  mdb_del(MDB_txn *txn, MDB_dbi dbi, MDB_val *key, MDB_val *data);
 
+int  mdb_extdata_alloc(MDB_txn *txn, size_t size, void **extdata);
+int  mdb_extdata_free(MDB_txn *txn, void *data);
+
 	/** @brief Create a cursor handle.
 	 *
 	 * A cursor is associated with a specific transaction and database.

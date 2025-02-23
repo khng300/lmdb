@@ -1026,6 +1026,7 @@ typedef struct MDB_page_header {
 #define	P_LEAF		 0x02		/**< leaf page */
 #define	P_OVERFLOW	 0x04		/**< overflow page */
 #define	P_META		 0x08		/**< meta page */
+#define	P_EXTDATA	 0x10	/**< for external data block pages */
 #define	P_LEAF2		 0x20		/**< for #MDB_DUPFIXED records */
 #define	P_SUBP		 0x40		/**< for #MDB_DUPSORT sub-pages */
 #define	P_LOOSE		 0x4000		/**< page was dirtied then freed, can be reused */
@@ -1078,6 +1079,15 @@ typedef struct MDB_page2 {
 	/** Address of first usable data byte in a page, after the header */
 #define METADATA(p)	 ((void *)((char *)(p) + PAGEHDRSZ))
 
+	/** Size of the externel data page header */
+#define EXTDATAPAGEHDRSZ	 ((PAGEHDRSZ + 16 - 1) / 16 * 16)
+
+	/** Address of first usable data byte in an external data page, after the header */
+#define EXTDATA(p)      ((void *)((char *)(p) + EXTDATAPAGEHDRSZ))
+
+	/** External data block address to the page header address */
+#define EXTDATA2PAGE(p)	 ((void *)((char *)(p) - EXTDATAPAGEHDRSZ))
+
 	/** ITS#7713, change PAGEBASE to handle 65536 byte pages */
 #define	PAGEBASE	PAGEHDRSZ
 
@@ -1118,6 +1128,12 @@ typedef struct MDB_ovpage {
 
 	/** The number of overflow pages needed to store the given size. */
 #define OVPAGES(size, psize)	((PAGEHDRSZ-1 + (size)) / (psize) + 1)
+
+	/** The number of external data pages needed to store the given size. */
+#define EXTDATAPAGES(size, psize)	((EXTDATAPAGEHDRSZ-1 + (size)) / (psize) + 1)
+
+	/** Convert address to page number. */
+#define ADDR2PGNO(env, addr)	(((char *)(addr) - (env)->me_map) / (env)->me_psize)
 
 	/** Link in #MDB_txn.%mt_loose_pgs list.
 	 *  Kept outside the page header, which is needed when reusing the page.
@@ -1269,6 +1285,12 @@ typedef struct MDB_db {
 	pgno_t		md_root;		/**< the root page of this tree */
 } MDB_db;
 
+	/** Information about a externel data allocation */
+typedef struct MDB_extdata {
+	txnid_t		me_txnid;
+	mdb_size_t	me_npages;
+} MDB_extdata;
+
 #define MDB_VALID	0x8000		/**< DB handle is valid, for me_dbflags */
 #define PERSISTENT_FLAGS	(0xffff & ~(MDB_VALID))
 	/** #mdb_dbi_open() flags */
@@ -1279,8 +1301,10 @@ typedef struct MDB_db {
 #define	FREE_DBI	0
 	/** Handle for the default DB. */
 #define	MAIN_DBI	1
-	/** Number of DBs in metapage (free and main) - also hardcoded elsewhere */
-#define CORE_DBS	2
+	/** Handle for the external data pages DB. */
+#define	EXTDATA_DBI	2
+	/** Number of DBs in metapage (free, main and extdata) - also hardcoded elsewhere */
+#define CORE_DBS	3
 
 	/** Number of meta pages - also hardcoded elsewhere */
 #define NUM_METAS	2
@@ -2198,6 +2222,7 @@ mdb_page_alloc(MDB_cursor *mc, int num, MDB_page **mp)
 	for (op = MDB_FIRST;; op = MDB_NEXT) {
 		MDB_val key, data;
 		MDB_node *leaf;
+		MDB_page *p;
 		pgno_t *idl;
 
 		/* Seek a big enough contiguous page range. Prefer
@@ -2265,8 +2290,8 @@ mdb_page_alloc(MDB_cursor *mc, int num, MDB_page **mp)
 			if (oldest <= last)
 				break;
 		}
-		np = m2.mc_pg[m2.mc_top];
-		leaf = NODEPTR(np, m2.mc_ki[m2.mc_top]);
+		p = m2.mc_pg[m2.mc_top];
+		leaf = NODEPTR(p, m2.mc_ki[m2.mc_top]);
 		if ((rc = mdb_node_read(&m2, leaf, &data)) != MDB_SUCCESS)
 			goto fail;
 
@@ -2665,6 +2690,7 @@ mdb_txn_renew0(MDB_txn *txn)
 		txn->mt_dbflags[i] = (x & MDB_VALID) ? DB_VALID|DB_USRVALID|DB_STALE : 0;
 	}
 	txn->mt_dbflags[MAIN_DBI] = DB_VALID|DB_USRVALID;
+	txn->mt_dbflags[EXTDATA_DBI] = DB_VALID|DB_USRVALID;
 	txn->mt_dbflags[FREE_DBI] = DB_VALID;
 
 	if (env->me_flags & MDB_FATAL_ERROR) {
@@ -3298,6 +3324,7 @@ mdb_env_init_meta0(MDB_env *env, MDB_meta *meta)
 	meta->mm_flags |= MDB_INTEGERKEY; /* this is mm_dbs[FREE_DBI].md_flags */
 	meta->mm_dbs[FREE_DBI].md_root = P_INVALID;
 	meta->mm_dbs[MAIN_DBI].md_root = P_INVALID;
+	meta->mm_dbs[EXTDATA_DBI].md_root = P_INVALID;
 }
 
 /** Write the environment parameters of a freshly created DB environment.
@@ -3402,6 +3429,7 @@ mdb_env_write_meta(MDB_txn *txn)
 		mp->mm_mapsize = mapsize;
 		mp->mm_dbs[FREE_DBI] = txn->mt_dbs[FREE_DBI];
 		mp->mm_dbs[MAIN_DBI] = txn->mt_dbs[MAIN_DBI];
+		mp->mm_dbs[EXTDATA_DBI] = txn->mt_dbs[EXTDATA_DBI];
 		mp->mm_last_pg = txn->mt_next_pgno - 1;
 #if (__GNUC__ * 100 + __GNUC_MINOR__ >= 404) && /* TODO: portability */	\
 	!(defined(__i386__) || defined(__x86_64__))
@@ -3434,6 +3462,7 @@ mdb_env_write_meta(MDB_txn *txn)
 	meta.mm_mapsize = mapsize;
 	meta.mm_dbs[FREE_DBI] = txn->mt_dbs[FREE_DBI];
 	meta.mm_dbs[MAIN_DBI] = txn->mt_dbs[MAIN_DBI];
+	meta.mm_dbs[EXTDATA_DBI] = txn->mt_dbs[EXTDATA_DBI];
 	meta.mm_last_pg = txn->mt_next_pgno - 1;
 	meta.mm_txnid = txn->mt_txnid;
 
@@ -4701,8 +4730,10 @@ mdb_env_open(MDB_env *env, const char *path, unsigned int flags, mdb_mode_t mode
 				env->me_txn0 = txn;
 			} else {
 				rc = ENOMEM;
+				goto leave;
 			}
 		}
+		env->me_dbxs[EXTDATA_DBI].md_cmp = mdb_cmp_long; /* aligned MDB_INTEGERKEY */
 	}
 
 leave:
@@ -5348,6 +5379,44 @@ mdb_ovpage_free(MDB_cursor *mc, MDB_page *mp)
 			return rc;
 	}
 	mc->mc_db->md_overflow_pages -= ovpages;
+
+	return 0;
+}
+
+static int
+mdb_extdata_page_free(MDB_cursor *mc, txnid_t txnid, MDB_page *mp, unsigned int npages)
+{
+	MDB_txn *txn = mc->mc_txn;
+	MDB_env *env = txn->mt_env;
+	pgno_t pg = ADDR2PGNO(env, mp);
+	int rc;
+
+	DPRINTF(("free external data pages %"Yu" (%d)", pg, npages));
+	/* If the page is dirty,
+	 * so we should give it back to our current free list, if any.
+	 * Otherwise put it onto the list of pages we freed in this txn.
+	 *
+	 * Won't create me_pghead: me_pglast must be inited along with it.
+	 */
+	if (IS_MUTABLE(txn, mp) && env->me_pghead) {
+		unsigned i, j;
+		pgno_t *mop;
+		rc = mdb_midl_need(&env->me_pghead, npages);
+		if (rc)
+			return rc;
+		/* Insert in me_pghead */
+		mop = env->me_pghead;
+		j = mop[0] + npages;
+		for (i = mop[0]; i && mop[i] < pg; i--)
+			mop[j--] = mop[i];
+		while (j>i)
+			mop[j--] = pg++;
+		mop[0] += npages;
+	} else {
+		rc = mdb_midl_append_range(&txn->mt_free_pgs, pg, npages);
+		if (rc)
+			return rc;
+	}
 
 	return 0;
 }
@@ -8703,6 +8772,73 @@ mdb_put(MDB_txn *txn, MDB_dbi dbi,
 	txn->mt_cursors[dbi] = &mc;
 	rc = _mdb_cursor_put(&mc, key, data, flags);
 	txn->mt_cursors[dbi] = mc.mc_next;
+	return rc;
+}
+
+int
+mdb_extdata_alloc(MDB_txn *txn, size_t size, void **extdata)
+{
+	MDB_cursor mc;
+	MDB_xcursor mx;
+	MDB_page *mp;
+	MDB_val key, data;
+	uintptr_t addr;
+	MDB_extdata med;
+	unsigned int npages;
+	int rc;
+
+	if (txn->mt_flags & (MDB_TXN_RDONLY|MDB_TXN_BLOCKED))
+		return (txn->mt_flags & MDB_TXN_RDONLY) ? EACCES : MDB_BAD_TXN;
+
+	npages = EXTDATAPAGES(size, txn->mt_env->me_psize);
+
+	mdb_cursor_init(&mc, txn, EXTDATA_DBI, &mx);
+	if ((rc = mdb_page_new(&mc, P_EXTDATA, npages, &mp)))
+		return rc;
+	addr = (uintptr_t)mp - (uintptr_t)txn->mt_env->me_map;
+	med.me_txnid = txn->mt_txnid;
+	med.me_npages = npages;
+	key.mv_data = &addr;
+	key.mv_size = sizeof(addr);
+	data.mv_data = &med;
+	data.mv_size = sizeof(med);
+
+	mc.mc_next = txn->mt_cursors[EXTDATA_DBI];
+	txn->mt_cursors[EXTDATA_DBI] = &mc;
+	rc = _mdb_cursor_put(&mc, &key, &data, 0);
+	txn->mt_cursors[EXTDATA_DBI] = mc.mc_next;
+	if (!rc)
+		*extdata = EXTDATA(mp);
+	return rc;
+}
+
+int
+mdb_extdata_free(MDB_txn *txn, void *extdata)
+{
+	MDB_cursor mc;
+	MDB_xcursor mx;
+	MDB_val key, data;
+	MDB_extdata med;
+	uintptr_t addr;
+	MDB_page *mp;
+	int		 rc, exact;
+
+	mp = (MDB_page *)EXTDATA2PAGE(extdata);
+	addr = (uintptr_t)mp - (uintptr_t)txn->mt_env->me_map;
+	key.mv_data = &addr;
+	key.mv_size = sizeof(addr);
+
+	mdb_cursor_init(&mc, txn, EXTDATA_DBI, &mx);
+	rc = mdb_cursor_set(&mc, &key, &data, MDB_SET, &exact);
+	if (rc == 0) {
+		memcpy(&med, data.mv_data, sizeof(med));
+		mc.mc_next = txn->mt_cursors[EXTDATA_DBI];
+		txn->mt_cursors[EXTDATA_DBI] = &mc;
+		rc = _mdb_cursor_del(&mc, 0);
+		txn->mt_cursors[EXTDATA_DBI] = mc.mc_next;
+		if (rc == 0)
+			rc = mdb_extdata_page_free(&mc, med.me_txnid, mp, med.me_npages);
+	}
 	return rc;
 }
 
