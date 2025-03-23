@@ -283,6 +283,9 @@ typedef struct MDB_val {
 /** @brief A callback function used to compare two keys in a database */
 typedef int  (MDB_cmp_func)(const MDB_val *a, const MDB_val *b);
 
+/** @brief A callback function used to compare two keys in a database */
+typedef int  (MDB_cmp_func2)(void *ctx, const MDB_val *a, const MDB_val *b);
+
 /** @brief A callback function used to relocate a position-dependent data item
  * in a fixed-address database.
  *
@@ -1189,6 +1192,28 @@ int  mdb_drop(MDB_txn *txn, MDB_dbi dbi, int del);
 	 * @param[in] txn A transaction handle returned by #mdb_txn_begin()
 	 * @param[in] dbi A database handle returned by #mdb_dbi_open()
 	 * @param[in] cmp A #MDB_cmp_func function
+	 * @param[in] ctx An arbitrary pointer for whatever the application needs.
+	 * @return A non-zero error value on failure and 0 on success. Some possible
+	 * errors are:
+	 * <ul>
+	 *	<li>EINVAL - an invalid parameter was specified.
+	 * </ul>
+	 */
+int  mdb_set_compare2(MDB_txn *txn, MDB_dbi dbi, MDB_cmp_func2 *cmp, void *ctx);
+
+	/** @brief Set a custom key comparison function for a database.
+	 *
+	 * The comparison function is called whenever it is necessary to compare a
+	 * key specified by the application with a key currently stored in the database.
+	 * If no comparison function is specified, and no special key flags were specified
+	 * with #mdb_dbi_open(), the keys are compared lexically, with shorter keys collating
+	 * before longer keys.
+	 * @warning This function must be called before any data access functions are used,
+	 * otherwise data corruption may occur. The same comparison function must be used by every
+	 * program accessing the database, every time the database is used.
+	 * @param[in] txn A transaction handle returned by #mdb_txn_begin()
+	 * @param[in] dbi A database handle returned by #mdb_dbi_open()
+	 * @param[in] cmp A #MDB_cmp_func function
 	 * @return A non-zero error value on failure and 0 on success. Some possible
 	 * errors are:
 	 * <ul>
@@ -1196,6 +1221,30 @@ int  mdb_drop(MDB_txn *txn, MDB_dbi dbi, int del);
 	 * </ul>
 	 */
 int  mdb_set_compare(MDB_txn *txn, MDB_dbi dbi, MDB_cmp_func *cmp);
+
+	/** @brief Set a custom data comparison function for a #MDB_DUPSORT database.
+	 *
+	 * This comparison function is called whenever it is necessary to compare a data
+	 * item specified by the application with a data item currently stored in the database.
+	 * This function only takes effect if the database was opened with the #MDB_DUPSORT
+	 * flag.
+	 * If no comparison function is specified, and no special key flags were specified
+	 * with #mdb_dbi_open(), the data items are compared lexically, with shorter items collating
+	 * before longer items.
+	 * @warning This function must be called before any data access functions are used,
+	 * otherwise data corruption may occur. The same comparison function must be used by every
+	 * program accessing the database, every time the database is used.
+	 * @param[in] txn A transaction handle returned by #mdb_txn_begin()
+	 * @param[in] dbi A database handle returned by #mdb_dbi_open()
+	 * @param[in] cmp A #MDB_cmp_func function
+	 * @param[in] ctx An arbitrary pointer for whatever the application needs.
+	 * @return A non-zero error value on failure and 0 on success. Some possible
+	 * errors are:
+	 * <ul>
+	 *	<li>EINVAL - an invalid parameter was specified.
+	 * </ul>
+	 */
+int  mdb_set_dupsort2(MDB_txn *txn, MDB_dbi dbi, MDB_cmp_func2 *cmp, void *ctx);
 
 	/** @brief Set a custom data comparison function for a #MDB_DUPSORT database.
 	 *
