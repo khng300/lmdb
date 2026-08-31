@@ -1405,9 +1405,11 @@ typedef union MDB_metabuf {
 	 */
 typedef struct MDB_dbx {
 	MDB_val		md_name;		/**< name of the database */
-	MDB_cmp_func	*md_cmp;	/**< function for comparing keys */
-	MDB_cmp_func	*md_dcmp;	/**< function for comparing data items */
+	MDB_cmp_func2	*md_cmp;	/**< function for comparing keys */
+	MDB_cmp_func2	*md_dcmp;	/**< function for comparing data items */
 	MDB_rel_func	*md_rel;	/**< user relocate function */
+	void		*md_cmpctx;		/**< user-provided context for md_cmp */
+	void		*md_dcmpctx;	/**< user-provided context for md_dcmp */
 	void		*md_relctx;		/**< user-provided context for md_rel */
 } MDB_dbx;
 
@@ -1860,7 +1862,7 @@ static void mdb_default_cmp(MDB_txn *txn, MDB_dbi dbi);
 static int mdb_reader_check0(MDB_env *env, int rlocked, int *dead);
 
 /** @cond */
-static MDB_cmp_func	mdb_cmp_memn, mdb_cmp_memnr, mdb_cmp_int, mdb_cmp_cint, mdb_cmp_long;
+static MDB_cmp_func2	mdb_cmp_memn, mdb_cmp_memnr, mdb_cmp_int, mdb_cmp_cint, mdb_cmp_long;
 /** @endcond */
 
 /** Compare two items pointing at '#mdb_size_t's of unknown alignment. */
@@ -2213,16 +2215,16 @@ static void mdb_audit(MDB_txn *txn)
 int
 mdb_cmp(MDB_txn *txn, MDB_dbi dbi, const MDB_val *a, const MDB_val *b)
 {
-	return txn->mt_dbxs[dbi].md_cmp(a, b);
+	return txn->mt_dbxs[dbi].md_cmp(txn->mt_dbxs[dbi].md_cmpctx, txn, a, b);
 }
 
 int
 mdb_dcmp(MDB_txn *txn, MDB_dbi dbi, const MDB_val *a, const MDB_val *b)
 {
-	MDB_cmp_func *dcmp = txn->mt_dbxs[dbi].md_dcmp;
+	MDB_cmp_func2 *dcmp = txn->mt_dbxs[dbi].md_dcmp;
 	if (NEED_CMP_CLONG(dcmp, a->mv_size))
 		dcmp = mdb_cmp_clong;
-	return dcmp(a, b);
+	return dcmp(txn->mt_dbxs[dbi].md_dcmpctx, txn, a, b);
 }
 
 /** Allocate memory for a page.
@@ -6615,8 +6617,11 @@ mdb_env_close(MDB_env *env)
 
 /** Compare two items pointing at aligned #mdb_size_t's */
 static int
-mdb_cmp_long(const MDB_val *a, const MDB_val *b)
+mdb_cmp_long(void *ctx, MDB_txn *txn, const MDB_val *a, const MDB_val *b)
 {
+	(void)ctx;
+	(void)txn;
+
 	return (*(mdb_size_t *)a->mv_data < *(mdb_size_t *)b->mv_data) ? -1 :
 		*(mdb_size_t *)a->mv_data > *(mdb_size_t *)b->mv_data;
 }
@@ -6627,8 +6632,11 @@ mdb_cmp_long(const MDB_val *a, const MDB_val *b)
  *	but #mdb_cmp_clong() is called instead if the data type is #mdb_size_t.
  */
 static int
-mdb_cmp_int(const MDB_val *a, const MDB_val *b)
+mdb_cmp_int(void *ctx, MDB_txn *txn, const MDB_val *a, const MDB_val *b)
 {
+	(void)ctx;
+	(void)txn;
+
 	return (*(unsigned int *)a->mv_data < *(unsigned int *)b->mv_data) ? -1 :
 		*(unsigned int *)a->mv_data > *(unsigned int *)b->mv_data;
 }
@@ -6637,8 +6645,11 @@ mdb_cmp_int(const MDB_val *a, const MDB_val *b)
  *	Nodes and keys are guaranteed to be 2-byte aligned.
  */
 static int
-mdb_cmp_cint(const MDB_val *a, const MDB_val *b)
+mdb_cmp_cint(void *ctx, MDB_txn *txn, const MDB_val *a, const MDB_val *b)
 {
+	(void)ctx;
+	(void)txn;
+
 #if BYTE_ORDER == LITTLE_ENDIAN
 	unsigned short *u, *c;
 	int x;
@@ -6665,11 +6676,14 @@ mdb_cmp_cint(const MDB_val *a, const MDB_val *b)
 
 /** Compare two items lexically */
 static int
-mdb_cmp_memn(const MDB_val *a, const MDB_val *b)
+mdb_cmp_memn(void *ctx, MDB_txn *txn, const MDB_val *a, const MDB_val *b)
 {
 	int diff;
 	ssize_t len_diff;
 	unsigned int len;
+
+	(void)ctx;
+	(void)txn;
 
 	len = a->mv_size;
 	len_diff = (ssize_t) a->mv_size - (ssize_t) b->mv_size;
@@ -6684,11 +6698,14 @@ mdb_cmp_memn(const MDB_val *a, const MDB_val *b)
 
 /** Compare two items in reverse byte order */
 static int
-mdb_cmp_memnr(const MDB_val *a, const MDB_val *b)
+mdb_cmp_memnr(void *ctx, MDB_txn *txn, const MDB_val *a, const MDB_val *b)
 {
 	const unsigned char	*p1, *p2, *p1_lim;
 	ssize_t len_diff;
 	int diff;
+
+	(void)ctx;
+	(void)txn;
 
 	p1_lim = (const unsigned char *)a->mv_data;
 	p1 = (const unsigned char *)a->mv_data + a->mv_size;
@@ -6724,7 +6741,7 @@ mdb_node_search(MDB_cursor *mc, MDB_val *key, int *exactp)
 	MDB_page *mp = mc->mc_pg[mc->mc_top];
 	MDB_node	*node = NULL;
 	MDB_val	 nodekey;
-	MDB_cmp_func *cmp;
+	MDB_cmp_func2 *cmp;
 	DKBUF;
 
 	nkeys = NUMKEYS(mp);
@@ -6753,7 +6770,7 @@ mdb_node_search(MDB_cursor *mc, MDB_val *key, int *exactp)
 		while (low <= high) {
 			i = (low + high) >> 1;
 			nodekey.mv_data = LEAF2KEY(mp, i, nodekey.mv_size);
-			rc = cmp(key, &nodekey);
+			rc = cmp(mc->mc_dbx->md_cmpctx, mc->mc_txn, key, &nodekey);
 			DPRINTF(("found leaf index %u [%s], rc = %i",
 			    i, DKEY(&nodekey), rc));
 			if (rc == 0)
@@ -6771,7 +6788,7 @@ mdb_node_search(MDB_cursor *mc, MDB_val *key, int *exactp)
 			nodekey.mv_size = NODEKSZ(node);
 			nodekey.mv_data = NODEKEY(node);
 
-			rc = cmp(key, &nodekey);
+			rc = cmp(mc->mc_dbx->md_cmpctx, mc->mc_txn, key, &nodekey);
 #if MDB_DEBUG
 			if (IS_LEAF(mp))
 				DPRINTF(("found leaf index %u [%s], rc = %i",
@@ -8075,7 +8092,7 @@ mdb_cursor_set(MDB_cursor *mc, MDB_val *key, MDB_val *data,
 			leaf = NODEPTR(mp, 0);
 			MDB_GET_KEY2(leaf, nodekey);
 		}
-		rc = mc->mc_dbx->md_cmp(key, &nodekey);
+		rc = mc->mc_dbx->md_cmp(mc->mc_dbx->md_cmpctx, mc->mc_txn, key, &nodekey);
 		if (rc == 0) {
 			/* Probably happens rarely, but first node on the page
 			 * was the one we wanted.
@@ -8096,7 +8113,7 @@ mdb_cursor_set(MDB_cursor *mc, MDB_val *key, MDB_val *data,
 					leaf = NODEPTR(mp, nkeys-1);
 					MDB_GET_KEY2(leaf, nodekey);
 				}
-				rc = mc->mc_dbx->md_cmp(key, &nodekey);
+				rc = mc->mc_dbx->md_cmp(mc->mc_dbx->md_cmpctx, mc->mc_txn, key, &nodekey);
 				if (rc == 0) {
 					/* last node was the one we wanted */
 					mc->mc_ki[mc->mc_top] = nkeys-1;
@@ -8114,7 +8131,7 @@ mdb_cursor_set(MDB_cursor *mc, MDB_val *key, MDB_val *data,
 							leaf = NODEPTR(mp, mc->mc_ki[mc->mc_top]);
 							MDB_GET_KEY2(leaf, nodekey);
 						}
-						rc = mc->mc_dbx->md_cmp(key, &nodekey);
+						rc = mc->mc_dbx->md_cmp(mc->mc_dbx->md_cmpctx, mc->mc_txn, key, &nodekey);
 						if (rc == 0) {
 							/* current node was the one we wanted */
 							if (exactp)
@@ -8209,13 +8226,13 @@ set1:
 	} else if (data) {
 		if (op == MDB_GET_BOTH || op == MDB_GET_BOTH_RANGE) {
 			MDB_val olddata;
-			MDB_cmp_func *dcmp;
+			MDB_cmp_func2 *dcmp;
 			if ((rc = mdb_node_read(mc, leaf, &olddata)) != MDB_SUCCESS)
 				return rc;
 			dcmp = mc->mc_dbx->md_dcmp;
 			if (NEED_CMP_CLONG(dcmp, olddata.mv_size))
 				dcmp = mdb_cmp_clong;
-			rc = dcmp(data, &olddata);
+			rc = dcmp(mc->mc_dbx->md_dcmpctx, mc->mc_txn, data, &olddata);
 			if (rc) {
 				if (op == MDB_GET_BOTH || rc > 0)
 					return MDB_NOTFOUND;
@@ -8644,7 +8661,7 @@ _mdb_cursor_put(MDB_cursor *mc, MDB_val *key, MDB_val *data,
 			MDB_val k2;
 			rc = mdb_cursor_last(mc, &k2, &d2);
 			if (rc == 0) {
-				rc = mc->mc_dbx->md_cmp(key, &k2);
+				rc = mc->mc_dbx->md_cmp(mc->mc_dbx->md_cmpctx, mc->mc_txn, key, &k2);
 				if (rc > 0) {
 					rc = MDB_NOTFOUND;
 					mc->mc_ki[mc->mc_top]++;
@@ -8770,7 +8787,7 @@ more:
 
 			/* Was a single item before, must convert now */
 			if (!F_ISSET(leaf->mn_flags, F_DUPDATA)) {
-				MDB_cmp_func *dcmp;
+				MDB_cmp_func2 *dcmp;
 				/* Just overwrite the current item */
 				if (flags == MDB_CURRENT)
 					goto current;
@@ -8778,7 +8795,7 @@ more:
 				if (NEED_CMP_CLONG(dcmp, olddata.mv_size))
 					dcmp = mdb_cmp_clong;
 				/* does data match? */
-				if (!dcmp(data, &olddata)) {
+				if (!dcmp(mc->mc_dbx->md_dcmpctx, mc->mc_txn, data, &olddata)) {
 					if (flags & (MDB_NODUPDATA|MDB_APPENDDUP))
 						return MDB_KEYEXIST;
 					/* overwrite it */
@@ -9588,6 +9605,8 @@ mdb_xcursor_init0(MDB_cursor *mc)
 	mx->mx_dbx.md_cmp = mc->mc_dbx->md_dcmp;
 	mx->mx_dbx.md_dcmp = NULL;
 	mx->mx_dbx.md_rel = mc->mc_dbx->md_rel;
+	mx->mx_dbx.md_cmpctx = mc->mc_dbx->md_dcmpctx;
+	mx->mx_dbx.md_dcmpctx = NULL;
 }
 
 /** Final setup of a sorted-dups cursor.
@@ -12648,21 +12667,23 @@ leave:
 	return rc;
 }
 
-int mdb_set_compare(MDB_txn *txn, MDB_dbi dbi, MDB_cmp_func *cmp)
+int mdb_set_compare2(MDB_txn *txn, MDB_dbi dbi, MDB_cmp_func2 *cmp, void *ctx)
 {
 	if (!TXN_DBI_EXIST(txn, dbi, DB_USRVALID))
 		return EINVAL;
 
 	txn->mt_dbxs[dbi].md_cmp = cmp;
+	txn->mt_dbxs[dbi].md_cmpctx = ctx;
 	return MDB_SUCCESS;
 }
 
-int mdb_set_dupsort(MDB_txn *txn, MDB_dbi dbi, MDB_cmp_func *cmp)
+int mdb_set_dupsort2(MDB_txn *txn, MDB_dbi dbi, MDB_cmp_func2 *cmp, void *ctx)
 {
 	if (!TXN_DBI_EXIST(txn, dbi, DB_USRVALID))
 		return EINVAL;
 
 	txn->mt_dbxs[dbi].md_dcmp = cmp;
+	txn->mt_dbxs[dbi].md_dcmpctx = ctx;
 	return MDB_SUCCESS;
 }
 
@@ -12682,6 +12703,32 @@ int mdb_set_relctx(MDB_txn *txn, MDB_dbi dbi, void *ctx)
 
 	txn->mt_dbxs[dbi].md_relctx = ctx;
 	return MDB_SUCCESS;
+}
+
+static int
+mdb_cmp_v1_wrapper(void *ctx, MDB_txn *txn, const MDB_val *a, const MDB_val *b)
+{
+	(void)txn;
+
+	return ((MDB_cmp_func *)ctx)(a, b);
+}
+
+int
+mdb_set_compare(MDB_txn *txn, MDB_dbi dbi, MDB_cmp_func *cmp)
+{
+	if (!TXN_DBI_EXIST(txn, dbi, DB_USRVALID))
+		return EINVAL;
+
+	return mdb_set_compare2(txn, dbi, mdb_cmp_v1_wrapper, (void *)cmp);
+}
+
+int
+mdb_set_dupsort(MDB_txn *txn, MDB_dbi dbi, MDB_cmp_func *cmp)
+{
+	if (!TXN_DBI_EXIST(txn, dbi, DB_USRVALID))
+		return EINVAL;
+
+	return mdb_set_dupsort2(txn, dbi, mdb_cmp_v1_wrapper, (void *)cmp);
 }
 
 int ESECT
